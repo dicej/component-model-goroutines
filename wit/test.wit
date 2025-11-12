@@ -1,0 +1,10 @@
+package local:local;
+
+interface baz {
+  foo: async func(s: string) -> string;
+}
+
+world round-trip {
+  import baz;
+  export baz;
+}

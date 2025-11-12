@@ -1,0 +1,4 @@
+[submodule "go"]
+	path = go
+	url = https://github.com/dicej/go
+	branch = component-model-async
