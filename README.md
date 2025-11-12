@@ -2,8 +2,8 @@
 
 This is a rough proof-of-concept demonstrating how the [WebAssembly Component
 Model](https://github.com/WebAssembly/component-model/tree/main)'s [concurrency
-model](https://github.com/WebAssembly/component-model/tree/main) can be used
-idiomatically in Go via goroutines.
+model](https://github.com/WebAssembly/component-model/blob/main/design/mvp/Concurrency.md)
+can be used idiomatically in Go via goroutines.
 
 [The example](./foo.go) exports an
 [async-lifted](https://github.com/WebAssembly/component-model/blob/main/design/mvp/Concurrency.md#async-export-abi)
@@ -38,7 +38,7 @@ The following will:
 1. build the example with it, producing a Wasm module, then
 1. download the [wasi-preview1-component-adapter](https://github.com/bytecodealliance/wasmtime/tree/main/crates/wasi-preview1-component-adapter), then
 1. combine the Wasm module and adapter into a component, then
-1. build a [Wasmtime](https://github.com/bytecodealliance/wasmtime) based test harness, then
+1. build a [Wasmtime](https://github.com/bytecodealliance/wasmtime)-based test harness, then
 1. run the test!
 
 The test calls the function exported by the guest three times concurrently with
