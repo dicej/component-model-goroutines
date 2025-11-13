@@ -8,12 +8,12 @@ import (
 
 func Foo(value string) string {
 	channel := make(chan string)
-	callHost := func() {
-		channel <- HostFoo(value)
+	callImport := func() {
+		channel <- ImportFoo(value)
 	}
-	go callHost()
-	go callHost()
-	go callHost()
+	go callImport()
+	go callImport()
+	go callImport()
 	return fmt.Sprintf("guest[%v, %v, %v]", <-channel, <-channel, <-channel)
 }
 
@@ -46,13 +46,16 @@ var state *futureState = nil
 func exportFoo(utf8 unsafe.Pointer, length uint32) uint32 {
 	state = &futureState{make(chan idle), 0, make(map[uint32]chan uint32), runtime.Pinner{}}
 	state.pinner.Pin(state)
+
 	defer func() {
 		state = nil
 	}()
+
 	go func() {
 		result := Foo(unsafe.String((*uint8)(utf8), length))
-		taskReturn(unsafe.StringData(result), uint32(len(result)))
+		taskReturnFoo(unsafe.StringData(result), uint32(len(result)))
 	}()
+
 	return callback(EVENT_NONE, 0, 0)
 }
 
@@ -60,26 +63,32 @@ func exportFoo(utf8 unsafe.Pointer, length uint32) uint32 {
 func callbackFoo(event0 uint32, event1 uint32, event2 uint32) uint32 {
 	state = (*futureState)(contextGet())
 	contextSet(nil)
+
 	return callback(event0, event1, event2)
 }
 
 func callback(event0 uint32, event1 uint32, event2 uint32) uint32 {
 	switch event0 {
 	case EVENT_NONE:
+
 	case EVENT_SUBTASK:
 		switch event2 {
 		case STATUS_STARTING:
 			panic(fmt.Sprintf("unexpected subtask status: %v", event2))
+
 		case STATUS_STARTED:
+
 		case STATUS_RETURNED:
 			waitableJoin(event1, 0)
 			subtaskDrop(event1)
 			channel := state.pending[event1]
 			delete(state.pending, event1)
 			channel <- event2
+
 		default:
 			panic("todo")
 		}
+
 	default:
 		panic("todo")
 	}
@@ -112,21 +121,25 @@ func callback(event0 uint32, event1 uint32, event2 uint32) uint32 {
 }
 
 //go:wasmimport local:local/baz [async-lower][async]foo
-func hostFoo(utf8 *uint8, length uint32, results unsafe.Pointer) uint32
+func importFoo(utf8 *uint8, length uint32, results unsafe.Pointer) uint32
 
-func HostFoo(value string) string {
-	const BUFFER_SIZE uint32 = 2
+func ImportFoo(value string) string {
+	const RESULT_COUNT uint32 = 2
+
 	pinner := runtime.Pinner{}
 	defer pinner.Unpin()
+
 	utf8 := unsafe.StringData(value)
 	pinner.Pin(utf8)
-	results := unsafe.Pointer(unsafe.SliceData(make([]uint32, BUFFER_SIZE)))
+
+	results := unsafe.Pointer(unsafe.SliceData(make([]uint32, RESULT_COUNT)))
 	pinner.Pin(results)
 
-	status := hostFoo(utf8, uint32(len(value)), results)
+	status := importFoo(utf8, uint32(len(value)), results)
 
 	subtask := status >> 4
 	status = status & 0xF
+
 	switch status {
 	case STATUS_STARTING, STATUS_STARTED:
 		if state.waitableSet == 0 {
@@ -136,19 +149,21 @@ func HostFoo(value string) string {
 		channel := make(chan uint32)
 		state.pending[subtask] = channel
 		(<-channel)
+
 	case STATUS_RETURNED:
+
 	default:
 		panic(fmt.Sprintf("unexpected subtask status: %v", status))
 	}
 
 	return unsafe.String(
-		unsafe.Slice((**uint8)(results), BUFFER_SIZE)[0],
-		unsafe.Slice((*uint32)(results), BUFFER_SIZE)[1],
+		unsafe.Slice((**uint8)(results), RESULT_COUNT)[0],
+		unsafe.Slice((*uint32)(results), RESULT_COUNT)[1],
 	)
 }
 
 //go:wasmimport [export]local:local/baz [task-return][async]foo
-func taskReturn(utf8 *uint8, length uint32)
+func taskReturnFoo(utf8 *uint8, length uint32)
 
 //go:wasmimport $root [waitable-set-new]
 func waitableSetNew() uint32

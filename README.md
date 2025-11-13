@@ -29,7 +29,7 @@ Prequisites:
 
 - Bash
 - Make
-- Rust and Cargo 1.90 or newer
+- Rust 1.90 or newer
 - Go 1.25.0 or newer
 
 The following will:
