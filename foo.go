@@ -110,6 +110,9 @@ func callback(event0 uint32, event1 uint32, event2 uint32) uint32 {
 
 	if len(state.pending) == 0 {
 		state.pinner.Unpin()
+		if state.waitableSet != 0 {
+			waitableSetDrop(state.waitableSet)
+		}
 		return CALLBACK_CODE_EXIT
 	} else {
 		if state.waitableSet == 0 {
@@ -167,6 +170,9 @@ func taskReturnFoo(utf8 *uint8, length uint32)
 
 //go:wasmimport $root [waitable-set-new]
 func waitableSetNew() uint32
+
+//go:wasmimport $root [waitable-set-drop]
+func waitableSetDrop(waitableSet uint32)
 
 //go:wasmimport $root [waitable-join]
 func waitableJoin(waitable, waitableSet uint32)
