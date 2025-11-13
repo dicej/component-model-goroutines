@@ -1,10 +1,16 @@
 package local:local;
 
 interface baz {
-  foo: async func(s: string) -> string;
+  foo: async func(s: string, delay: bool) -> string;
+}
+
+interface streams-and-futures {
+  read-stream-u8: async func(s: stream<u8>) -> list<u8>;
+  echo-stream-u8: async func(s: stream<u8>) -> stream<u8>;
 }
 
 world round-trip {
   import baz;
   export baz;
+  export streams-and-futures;
 }

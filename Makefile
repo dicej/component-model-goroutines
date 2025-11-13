@@ -1,7 +1,7 @@
 foo-component.wasm: foo-with-wit.wasm wasi_snapshot_preview1.reactor.wasm
 	wasm-tools component new  --adapt wasi_snapshot_preview1.reactor.wasm $< --output $@
 
-foo-with-wit.wasm: foo.wasm
+foo-with-wit.wasm: foo.wasm wit/test.wit
 	wasm-tools component embed wit $< --output $@
 
 foo.wasm: foo.go go/bin/go
@@ -16,5 +16,4 @@ go/bin/go:
 
 .PHONY: test
 test: foo-component.wasm
-	cargo run --release --manifest-path test/Cargo.toml -- foo-component.wasm
-	@echo "success!"
+	TEST_COMPONENT=$$(pwd)/$< cargo test --release --manifest-path test/Cargo.toml
