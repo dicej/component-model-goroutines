@@ -27,10 +27,13 @@ handwritten.
 
 Prequisites:
 
-- Bash
-- Make
+- bash
+- make
+- curl
+- git
 - Rust 1.90 or newer
 - Go 1.25.0 or newer
+- [wasm-tools](https://github.com/bytecodealliance/wasm-tools/) 1.240.0 or later
 
 The following will:
 
