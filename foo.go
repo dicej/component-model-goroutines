@@ -8,12 +8,11 @@ import (
 
 func Foo(value string, delay bool) string {
 	channel := make(chan string)
-	callImport := func() {
-		channel <- ImportFoo(value, delay)
+	for i := 0; i < 3; i++ {
+		go func() {
+			channel <- ImportFoo(value, delay)
+		}()
 	}
-	go callImport()
-	go callImport()
-	go callImport()
 	return fmt.Sprintf("guest[%v, %v, %v]", <-channel, <-channel, <-channel)
 }
 
@@ -377,18 +376,18 @@ func (f *FutureWriter[T]) Drop() {
 
 type idle struct{}
 
-type futureState struct {
+type taskState struct {
 	channel     chan idle
 	waitableSet uint32
 	pending     map[uint32]chan uint32
 	pinner      runtime.Pinner
 }
 
-var state *futureState = nil
+var state *taskState = nil
 
 //go:wasmexport [async-lift]local:local/baz#[async]foo
 func exportFoo(utf8 unsafe.Pointer, length uint32, delay bool) uint32 {
-	state = &futureState{
+	state = &taskState{
 		make(chan idle),
 		0,
 		make(map[uint32]chan uint32),
@@ -410,7 +409,7 @@ func exportFoo(utf8 unsafe.Pointer, length uint32, delay bool) uint32 {
 
 //go:wasmexport [callback][async-lift]local:local/baz#[async]foo
 func callbackFoo(event0 uint32, event1 uint32, event2 uint32) uint32 {
-	state = (*futureState)(contextGet())
+	state = (*taskState)(contextGet())
 	contextSet(nil)
 
 	return callback(event0, event1, event2)
@@ -455,7 +454,7 @@ func MakeStreamU8() (StreamWriter[uint8], StreamReader[uint8]) {
 
 //go:wasmexport [async-lift]local:local/streams-and-futures#[async]read-stream-u8
 func exportReadStreamU8(stream uint32) uint32 {
-	state = &futureState{
+	state = &taskState{
 		make(chan idle),
 		0,
 		make(map[uint32]chan uint32),
@@ -477,7 +476,7 @@ func exportReadStreamU8(stream uint32) uint32 {
 
 //go:wasmexport [callback][async-lift]local:local/streams-and-futures#[async]read-stream-u8
 func callbackReadStreamU8(event0 uint32, event1 uint32, event2 uint32) uint32 {
-	state = (*futureState)(contextGet())
+	state = (*taskState)(contextGet())
 	contextSet(nil)
 
 	return callback(event0, event1, event2)
@@ -488,7 +487,7 @@ func taskReturnReadStreamU8(list *uint8, length uint32)
 
 //go:wasmexport [async-lift]local:local/streams-and-futures#[async]echo-stream-u8
 func exportEchoStreamU8(stream uint32) uint32 {
-	state = &futureState{
+	state = &taskState{
 		make(chan idle),
 		0,
 		make(map[uint32]chan uint32),
@@ -510,7 +509,7 @@ func exportEchoStreamU8(stream uint32) uint32 {
 
 //go:wasmexport [callback][async-lift]local:local/streams-and-futures#[async]echo-stream-u8
 func callbackEchoStreamU8(event0 uint32, event1 uint32, event2 uint32) uint32 {
-	state = (*futureState)(contextGet())
+	state = (*taskState)(contextGet())
 	contextSet(nil)
 
 	return callback(event0, event1, event2)
@@ -564,7 +563,7 @@ func MakeFutureString() (FutureWriter[string], FutureReader[string]) {
 
 //go:wasmexport [async-lift]local:local/streams-and-futures#[async]echo-future-string
 func exportEchoFutureString(future uint32) uint32 {
-	state = &futureState{
+	state = &taskState{
 		make(chan idle),
 		0,
 		make(map[uint32]chan uint32),
@@ -586,7 +585,7 @@ func exportEchoFutureString(future uint32) uint32 {
 
 //go:wasmexport [callback][async-lift]local:local/streams-and-futures#[async]echo-future-string
 func callbackEchoFutureString(event0 uint32, event1 uint32, event2 uint32) uint32 {
-	state = (*futureState)(contextGet())
+	state = (*taskState)(contextGet())
 	contextSet(nil)
 
 	return callback(event0, event1, event2)
