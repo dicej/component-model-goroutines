@@ -7,6 +7,7 @@ interface baz {
 interface streams-and-futures {
   read-stream-u8: async func(s: stream<u8>) -> list<u8>;
   echo-stream-u8: async func(s: stream<u8>) -> stream<u8>;
+  echo-future-string: async func(f: future<string>) -> future<string>;
 }
 
 world round-trip {

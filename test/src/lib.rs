@@ -16,8 +16,9 @@ mod test {
         wasmtime::{
             AsContextMut, Config, Engine, Store, StoreContextMut,
             component::{
-                Accessor, Component, Destination, HasData, Lift, Linker, ResourceTable, Source,
-                StreamConsumer, StreamProducer, StreamReader, StreamResult, VecBuffer,
+                Accessor, Component, Destination, FutureConsumer, FutureProducer, FutureReader,
+                HasData, Lift, Linker, ResourceTable, Source, StreamConsumer, StreamProducer,
+                StreamReader, StreamResult, VecBuffer,
             },
         },
         wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView},
@@ -287,6 +288,119 @@ mod test {
             task.block(accessor).await;
 
             assert_eq!(expected, &received.lock().unwrap()[..]);
+
+            Ok(())
+        })
+        .await
+    }
+
+    struct OptionProducer<T> {
+        source: Option<T>,
+        sleep: Pin<Box<dyn Future<Output = ()> + Send>>,
+    }
+
+    impl<T> OptionProducer<T> {
+        fn new(source: Option<T>, delay: bool) -> Self {
+            Self {
+                source,
+                sleep: if delay {
+                    tokio::time::sleep(DELAY).boxed()
+                } else {
+                    async {}.boxed()
+                },
+            }
+        }
+    }
+
+    impl<D, T: Unpin + Send + 'static> FutureProducer<D> for OptionProducer<T> {
+        type Item = T;
+
+        fn poll_produce(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            _: StoreContextMut<D>,
+            _: bool,
+        ) -> Poll<anyhow::Result<Option<T>>> {
+            let sleep = &mut self.as_mut().get_mut().sleep;
+            task::ready!(sleep.as_mut().poll(cx));
+            *sleep = async {}.boxed();
+
+            Poll::Ready(Ok(self.get_mut().source.take()))
+        }
+    }
+
+    struct OptionConsumer<T> {
+        destination: Arc<Mutex<Option<T>>>,
+        sleep: Pin<Box<dyn Future<Output = ()> + Send>>,
+    }
+
+    impl<T> OptionConsumer<T> {
+        fn new(destination: Arc<Mutex<Option<T>>>, delay: bool) -> Self {
+            Self {
+                destination,
+                sleep: if delay {
+                    tokio::time::sleep(DELAY).boxed()
+                } else {
+                    async {}.boxed()
+                },
+            }
+        }
+    }
+
+    impl<D, T: Lift + 'static> FutureConsumer<D> for OptionConsumer<T> {
+        type Item = T;
+
+        fn poll_consume(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            store: StoreContextMut<D>,
+            mut source: Source<Self::Item>,
+            _: bool,
+        ) -> Poll<anyhow::Result<()>> {
+            let sleep = &mut self.as_mut().get_mut().sleep;
+            task::ready!(sleep.as_mut().poll(cx));
+            *sleep = async {}.boxed();
+
+            source.read(store, self.destination.lock().unwrap().deref_mut())?;
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn echo_future_string() -> anyhow::Result<()> {
+        test_echo_future_string(false).await
+    }
+
+    #[tokio::test]
+    async fn echo_future_string_with_delay() -> anyhow::Result<()> {
+        test_echo_future_string(true).await
+    }
+
+    async fn test_echo_future_string(delay: bool) -> anyhow::Result<()> {
+        run_test(async move |accessor, guest| {
+            let expected = "Beware the Jubjub bird, and shun\n\tThe frumious Bandersnatch!";
+            let future = accessor.with(|access| {
+                FutureReader::new(
+                    access,
+                    OptionProducer::new(Some(expected.to_string()), delay),
+                )
+            });
+
+            let (future, task) = guest
+                .local_local_streams_and_futures()
+                .call_echo_future_string(accessor, future)
+                .await?;
+
+            let received = Arc::new(Mutex::new(None::<String>));
+            accessor
+                .with(|access| future.pipe(access, OptionConsumer::new(received.clone(), delay)));
+
+            task.block(accessor).await;
+
+            assert_eq!(
+                expected,
+                received.lock().unwrap().as_ref().unwrap().as_str()
+            );
 
             Ok(())
         })

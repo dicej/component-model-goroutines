@@ -42,9 +42,40 @@ func EchoStreamU8(stream StreamReader[uint8]) StreamReader[uint8] {
 	return rx
 }
 
+func EchoFutureString(future FutureReader[string]) FutureReader[string] {
+	tx, rx := MakeFutureString()
+
+	go func() {
+		defer future.Drop()
+		defer tx.Drop()
+
+		tx.Write(future.Read())
+	}()
+
+	return rx
+}
+
 // The remaining code would normally be either generated automatically from the
 // WIT file or packaged as part of a component model runtime library.  Here we
 // define it manually as part of this proof-of-concept:
+
+const EVENT_NONE uint32 = 0
+const EVENT_SUBTASK uint32 = 1
+const EVENT_STREAM_READ uint32 = 2
+const EVENT_STREAM_WRITE uint32 = 3
+const EVENT_FUTURE_READ uint32 = 4
+const EVENT_FUTURE_WRITE uint32 = 5
+
+const STATUS_STARTING uint32 = 0
+const STATUS_STARTED uint32 = 1
+const STATUS_RETURNED uint32 = 2
+
+const CALLBACK_CODE_EXIT uint32 = 0
+const CALLBACK_CODE_WAIT uint32 = 2
+
+const RETURN_CODE_BLOCKED uint32 = 0xFFFFFFFF
+const RETURN_CODE_COMPLETED uint32 = 0
+const RETURN_CODE_DROPPED uint32 = 1
 
 type StreamVtable[T any] struct {
 	size         uint32
@@ -115,13 +146,11 @@ func (s *StreamReader[T]) Read(maxCount uint32) []T {
 }
 
 func (s *StreamReader[T]) Drop() {
-	if s.handle == 0 {
-		panic("null stream handle")
-	}
-
 	handle := s.handle
-	s.handle = 0
-	s.vtable.dropReadable(handle)
+	if handle != 0 {
+		s.handle = 0
+		s.vtable.dropReadable(handle)
+	}
 }
 
 func (s *StreamReader[T]) TakeHandle() uint32 {
@@ -201,31 +230,150 @@ func (s *StreamWriter[T]) WriteAll(items []T) uint32 {
 }
 
 func (s *StreamWriter[T]) Drop() {
-	if s.handle == 0 {
-		panic("null stream handle")
-	}
-
 	handle := s.handle
-	s.handle = 0
-	s.vtable.dropWritable(handle)
+	if handle != 0 {
+		s.handle = 0
+		s.vtable.dropWritable(handle)
+	}
 }
 
-const EVENT_NONE uint32 = 0
-const EVENT_SUBTASK uint32 = 1
-const EVENT_STREAM_READ uint32 = 2
-const EVENT_STREAM_WRITE uint32 = 3
-const EVENT_FUTURE_READ uint32 = 4
-const EVENT_FUTURE_WRITE uint32 = 5
+type FutureVtable[T any] struct {
+	size         uint32
+	align        uint32
+	read         func(handle uint32, item unsafe.Pointer) uint32
+	write        func(handle uint32, item unsafe.Pointer) uint32
+	cancelRead   func(handle uint32) uint32
+	cancelWrite  func(handle uint32) uint32
+	dropReadable func(handle uint32)
+	dropWritable func(handle uint32)
+	lift         func(src unsafe.Pointer) T
+	lower        func(value T, dst unsafe.Pointer)
+}
 
-const STATUS_STARTING uint32 = 0
-const STATUS_STARTED uint32 = 1
-const STATUS_RETURNED uint32 = 2
+type FutureReader[T any] struct {
+	vtable *FutureVtable[T]
+	handle uint32
+}
 
-const CALLBACK_CODE_EXIT uint32 = 0
-const CALLBACK_CODE_WAIT uint32 = 2
+func (f *FutureReader[T]) Read() T {
+	if f.handle == 0 {
+		panic("null future handle")
+	}
 
-const RETURN_CODE_BLOCKED uint32 = 0xFFFFFFFF
-const RETURN_CODE_DROPPED uint32 = 1
+	handle := f.handle
+	f.handle = 0
+	defer f.vtable.dropReadable(handle)
+
+	pinner := runtime.Pinner{}
+	defer pinner.Unpin()
+
+	buffer := cabiRealloc(nil, 0, uintptr(f.vtable.align), uintptr(f.vtable.size))
+	pinner.Pin(buffer)
+
+	code := f.vtable.read(handle, buffer)
+
+	if code == RETURN_CODE_BLOCKED {
+		if state.waitableSet == 0 {
+			state.waitableSet = waitableSetNew()
+		}
+		waitableJoin(handle, state.waitableSet)
+		channel := make(chan uint32)
+		state.pending[handle] = channel
+		code = (<-channel)
+	}
+
+	code = code & 0xF
+
+	switch code {
+	case RETURN_CODE_COMPLETED, RETURN_CODE_DROPPED:
+		if f.vtable.lift == nil {
+			return unsafe.Slice((*T)(buffer), 1)[0]
+		} else {
+			return f.vtable.lift(buffer)
+		}
+
+	default:
+		panic("todo: handle cancellation")
+	}
+}
+
+func (f *FutureReader[T]) Drop() {
+	handle := f.handle
+	if handle != 0 {
+		f.handle = 0
+		f.vtable.dropReadable(handle)
+	}
+}
+
+func (f *FutureReader[T]) TakeHandle() uint32 {
+	if f.handle == 0 {
+		panic("null future handle")
+	}
+
+	handle := f.handle
+	f.handle = 0
+	return handle
+}
+
+type FutureWriter[T any] struct {
+	vtable *FutureVtable[T]
+	handle uint32
+}
+
+func (f *FutureWriter[T]) Write(item T) bool {
+	if f.handle == 0 {
+		panic("null future handle")
+	}
+
+	handle := f.handle
+	f.handle = 0
+	defer f.vtable.dropWritable(handle)
+
+	pinner := runtime.Pinner{}
+	defer pinner.Unpin()
+
+	var buffer unsafe.Pointer
+	if f.vtable.lower == nil {
+		buffer = unsafe.Pointer(unsafe.SliceData([]T{item}))
+	} else {
+		buffer = cabiRealloc(nil, 0, uintptr(f.vtable.align), uintptr(f.vtable.size))
+		f.vtable.lower(item, buffer)
+	}
+	pinner.Pin(buffer)
+
+	code := f.vtable.write(handle, buffer)
+
+	if code == RETURN_CODE_BLOCKED {
+		if state.waitableSet == 0 {
+			state.waitableSet = waitableSetNew()
+		}
+		waitableJoin(handle, state.waitableSet)
+		channel := make(chan uint32)
+		state.pending[handle] = channel
+		code = (<-channel)
+	}
+
+	code = code & 0xF
+
+	switch code {
+	case RETURN_CODE_COMPLETED:
+		return true
+
+	case RETURN_CODE_DROPPED:
+		return false
+
+	default:
+		panic("todo: handle cancellation")
+	}
+}
+
+func (f *FutureWriter[T]) Drop() {
+	handle := f.handle
+	if handle != 0 {
+		f.handle = 0
+		f.vtable.dropWritable(handle)
+	}
+}
 
 type idle struct{}
 
@@ -370,6 +518,82 @@ func callbackEchoStreamU8(event0 uint32, event1 uint32, event2 uint32) uint32 {
 
 //go:wasmimport [export]local:local/streams-and-futures [task-return][async]echo-stream-u8
 func taskReturnEchoStreamU8(handle uint32)
+
+//go:wasmimport [export]local:local/streams-and-futures [future-new-0][async]echo-future-string
+func futureStringNew() uint64
+
+//go:wasmimport [export]local:local/streams-and-futures [async-lower][future-read-0][async]echo-future-string
+func futureStringRead(handle uint32, item unsafe.Pointer) uint32
+
+//go:wasmimport [export]local:local/streams-and-futures [async-lower][future-write-0][async]echo-future-string
+func futureStringWrite(handle uint32, item unsafe.Pointer) uint32
+
+//go:wasmimport [export]local:local/streams-and-futures [future-drop-readable-0][async]echo-future-string
+func futureStringDropReadable(handle uint32)
+
+//go:wasmimport [export]local:local/streams-and-futures [future-drop-writable-0][async]echo-future-string
+func futureStringDropWritable(handle uint32)
+
+func futureStringLift(src unsafe.Pointer) string {
+	return unsafe.String(unsafe.Slice((**uint8)(src), 2)[0], unsafe.Slice((*uint32)(src), 2)[1])
+}
+
+func futureStringLower(value string, dst unsafe.Pointer) {
+	unsafe.Slice((**uint8)(dst), 2)[0] = unsafe.StringData(value)
+	unsafe.Slice((*uint32)(dst), 2)[1] = uint32(len(value))
+}
+
+var futureStringVtable = FutureVtable[string]{
+	8,
+	4,
+	futureStringRead,
+	futureStringWrite,
+	nil,
+	nil,
+	futureStringDropReadable,
+	futureStringDropWritable,
+	futureStringLift,
+	futureStringLower,
+}
+
+func MakeFutureString() (FutureWriter[string], FutureReader[string]) {
+	pair := futureStringNew()
+	return FutureWriter[string]{&futureStringVtable, uint32(pair >> 32)},
+		FutureReader[string]{&futureStringVtable, uint32(pair & 0xFFFFFFFF)}
+}
+
+//go:wasmexport [async-lift]local:local/streams-and-futures#[async]echo-future-string
+func exportEchoFutureString(future uint32) uint32 {
+	state = &futureState{
+		make(chan idle),
+		0,
+		make(map[uint32]chan uint32),
+		runtime.Pinner{},
+	}
+	state.pinner.Pin(state)
+
+	defer func() {
+		state = nil
+	}()
+
+	go func() {
+		result := EchoFutureString(FutureReader[string]{&futureStringVtable, future})
+		taskReturnEchoFutureString(result.TakeHandle())
+	}()
+
+	return callback(EVENT_NONE, 0, 0)
+}
+
+//go:wasmexport [callback][async-lift]local:local/streams-and-futures#[async]echo-future-string
+func callbackEchoFutureString(event0 uint32, event1 uint32, event2 uint32) uint32 {
+	state = (*futureState)(contextGet())
+	contextSet(nil)
+
+	return callback(event0, event1, event2)
+}
+
+//go:wasmimport [export]local:local/streams-and-futures [task-return][async]echo-future-string
+func taskReturnEchoFutureString(handle uint32)
 
 func callback(event0 uint32, event1 uint32, event2 uint32) uint32 {
 	switch event0 {
